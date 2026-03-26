@@ -5,6 +5,7 @@ import { OneCLI } from '@onecli-sh/sdk';
 
 import {
   ASSISTANT_NAME,
+  DATA_DIR,
   DEFAULT_TRIGGER,
   getTriggerPattern,
   GROUPS_DIR,
@@ -573,6 +574,26 @@ async function main(): Promise<void> {
   initDatabase();
   logger.info('Database initialized');
   loadState();
+
+  // In no-container mode (K8s Pod managed by agentserver), auto-create a main
+  // group if none exists. The main group enables IPC-based group registration
+  // so that agentserver can register per-user groups dynamically.
+  if (process.env.NANOCLAW_NO_CONTAINER === 'true' && Object.keys(registeredGroups).length === 0) {
+    logger.info('No-container mode: auto-creating main group');
+    registerGroup('main', {
+      name: 'Main',
+      folder: 'main',
+      trigger: ASSISTANT_NAME,
+      added_at: new Date().toISOString(),
+      requiresTrigger: false,
+      isMain: true,
+    });
+    // Create IPC directories for the main group so agentserver can write
+    // register_group commands via ExecSimple.
+    const mainIpcDir = path.join(DATA_DIR, 'ipc', 'main');
+    fs.mkdirSync(path.join(mainIpcDir, 'tasks'), { recursive: true });
+    fs.mkdirSync(path.join(mainIpcDir, 'messages'), { recursive: true });
+  }
 
   // Ensure OneCLI agents exist for all registered groups.
   // Recovers from missed creates (e.g. OneCLI was down at registration time).
