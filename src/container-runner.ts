@@ -748,10 +748,15 @@ async function runProcessAgent(
     TZ: TIMEZONE,
   };
 
+  // cwd must be the agent-runner directory so the Claude Agent SDK can find
+  // its cli.js relative to node_modules. The group directory is passed via
+  // the WORKSPACE_GROUP env var.
+  const agentRunnerDir = path.resolve(process.cwd(), 'container', 'agent-runner');
+
   return new Promise((resolve) => {
     const proc = spawn('node', [agentRunnerPath], {
       stdio: ['pipe', 'pipe', 'pipe'],
-      cwd: groupDir,
+      cwd: agentRunnerDir,
       env,
     });
 
