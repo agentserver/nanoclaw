@@ -9,4 +9,7 @@
 
 // telegram
 
+// weixin (agentserver bridge mode)
+import './weixin/index.js';
+
 // whatsapp
