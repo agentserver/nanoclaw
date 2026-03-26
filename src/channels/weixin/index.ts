@@ -17,6 +17,7 @@ import https from 'https';
 import { registerChannel } from '../registry.js';
 import type { ChannelOpts } from '../registry.js';
 import type { Channel, NewMessage } from '../../types.js';
+import { readEnvFile } from '../../env.js';
 
 function readBody(req: http.IncomingMessage): Promise<string> {
   return new Promise((resolve, reject) => {
@@ -161,8 +162,15 @@ class WeixinChannel implements Channel {
 }
 
 registerChannel('weixin', (opts) => {
-  const bridgeURL = process.env.NANOCLAW_WEIXIN_BRIDGE_URL;
-  const bridgeSecret = process.env.NANOCLAW_BRIDGE_SECRET;
+  // Read from .env file (written by entrypoint from NANOCLAW_CONFIG_CONTENT).
+  // NanoClaw's readEnvFile deliberately does NOT populate process.env to prevent
+  // secrets from leaking to agent child processes.
+  const envConfig = readEnvFile([
+    'NANOCLAW_WEIXIN_BRIDGE_URL',
+    'NANOCLAW_BRIDGE_SECRET',
+  ]);
+  const bridgeURL = envConfig.NANOCLAW_WEIXIN_BRIDGE_URL;
+  const bridgeSecret = envConfig.NANOCLAW_BRIDGE_SECRET;
   if (!bridgeURL || !bridgeSecret) return null;
   return new WeixinChannel(opts, bridgeURL, bridgeSecret);
 });
