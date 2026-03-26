@@ -646,6 +646,22 @@ async function main(): Promise<void> {
         return;
       }
 
+      // Auto-register unregistered weixin chats as solo groups.
+      // WeChat users message the bot directly — there's no manual group setup.
+      // The chat is registered as a solo group with requiresTrigger=false so
+      // every message is processed without needing @trigger.
+      if (!registeredGroups[chatJid] && chatJid.endsWith('@im.wechat')) {
+        const folderName = chatJid.replace(/[^a-zA-Z0-9-]/g, '-');
+        logger.info({ chatJid, folder: folderName }, 'Auto-registering weixin chat as solo group');
+        registerGroup(chatJid, {
+          name: chatJid,
+          folder: folderName,
+          trigger: ASSISTANT_NAME,
+          added_at: new Date().toISOString(),
+          requiresTrigger: false,
+        });
+      }
+
       // Sender allowlist drop mode: discard messages from denied senders before storing
       if (!msg.is_from_me && !msg.is_bot_message && registeredGroups[chatJid]) {
         const cfg = loadSenderAllowlist();
