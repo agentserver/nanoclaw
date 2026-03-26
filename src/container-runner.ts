@@ -299,6 +299,12 @@ export async function runContainerAgent(
   onProcess: (proc: ChildProcess, containerName: string) => void,
   onOutput?: (output: ContainerOutput) => Promise<void>,
 ): Promise<ContainerOutput> {
+  // No-container mode: run agent-runner as a direct child process.
+  // K8s Pod provides isolation; Docker is not available.
+  if (process.env.NANOCLAW_NO_CONTAINER === 'true') {
+    return runProcessAgent(group, input, onProcess, onOutput);
+  }
+
   const startTime = Date.now();
 
   const groupDir = resolveGroupFolderPath(group.folder);
@@ -685,6 +691,165 @@ export async function runContainerAgent(
         result: null,
         error: `Container spawn error: ${err.message}`,
       });
+    });
+  });
+}
+
+/**
+ * No-container mode: run the agent-runner as a direct child process.
+ * Same I/O protocol as container mode (stdin JSON, stdout markers).
+ * The agent-runner source lives at container/agent-runner/ and is compiled
+ * to dist/agent-runner/ by the Dockerfile build step.
+ */
+async function runProcessAgent(
+  group: RegisteredGroup,
+  input: ContainerInput,
+  onProcess: (proc: ChildProcess, containerName: string) => void,
+  onOutput?: (output: ContainerOutput) => Promise<void>,
+): Promise<ContainerOutput> {
+  const startTime = Date.now();
+  const groupDir = resolveGroupFolderPath(group.folder);
+  fs.mkdirSync(groupDir, { recursive: true });
+
+  const logsDir = path.join(groupDir, 'logs');
+  fs.mkdirSync(logsDir, { recursive: true });
+
+  // Set up IPC directories (same structure as container mode)
+  const groupIpcDir = resolveGroupIpcPath(group.folder);
+  fs.mkdirSync(path.join(groupIpcDir, 'messages'), { recursive: true });
+  fs.mkdirSync(path.join(groupIpcDir, 'tasks'), { recursive: true });
+  fs.mkdirSync(path.join(groupIpcDir, 'input'), { recursive: true });
+
+  // Set up sessions directory
+  const groupSessionsDir = path.join(DATA_DIR, 'sessions', group.folder, '.claude');
+  fs.mkdirSync(groupSessionsDir, { recursive: true });
+
+  const processName = `nanoclaw-process-${group.folder}-${Date.now()}`;
+
+  logger.info(
+    { group: group.name, processName, isMain: input.isMain },
+    'Spawning process agent (no-container mode)',
+  );
+
+  // Resolve agent-runner path. The Dockerfile compiles it to container/agent-runner/dist/.
+  // In the built image, it's at /app/container/agent-runner/dist/index.js.
+  const agentRunnerPath = path.resolve(process.cwd(), 'container', 'agent-runner', 'dist', 'index.js');
+  if (!fs.existsSync(agentRunnerPath)) {
+    logger.error({ agentRunnerPath }, 'Agent runner not found');
+    return { status: 'error', result: null, error: `Agent runner not found at ${agentRunnerPath}` };
+  }
+
+  // Build environment for the agent process
+  const env: Record<string, string> = {
+    ...process.env as Record<string, string>,
+    WORKSPACE_GROUP: groupDir,
+    WORKSPACE_IPC: groupIpcDir,
+    HOME: path.join(DATA_DIR, 'sessions', group.folder),
+    TZ: TIMEZONE,
+  };
+
+  return new Promise((resolve) => {
+    const proc = spawn('node', [agentRunnerPath], {
+      stdio: ['pipe', 'pipe', 'pipe'],
+      cwd: groupDir,
+      env,
+    });
+
+    onProcess(proc, processName);
+
+    let stdout = '';
+    let stderr = '';
+
+    proc.stdin.write(JSON.stringify(input));
+    proc.stdin.end();
+
+    // Streaming output: same marker protocol as container mode
+    let parseBuffer = '';
+    let newSessionId: string | undefined;
+    let outputChain = Promise.resolve();
+    let hadStreamingOutput = false;
+
+    proc.stdout.on('data', (data) => {
+      const chunk = data.toString();
+      stdout += chunk;
+
+      if (onOutput) {
+        parseBuffer += chunk;
+        let startIdx: number;
+        while ((startIdx = parseBuffer.indexOf(OUTPUT_START_MARKER)) !== -1) {
+          const endIdx = parseBuffer.indexOf(OUTPUT_END_MARKER, startIdx);
+          if (endIdx === -1) break;
+          const jsonStr = parseBuffer.slice(startIdx + OUTPUT_START_MARKER.length, endIdx).trim();
+          parseBuffer = parseBuffer.slice(endIdx + OUTPUT_END_MARKER.length);
+          try {
+            const parsed: ContainerOutput = JSON.parse(jsonStr);
+            if (parsed.newSessionId) newSessionId = parsed.newSessionId;
+            hadStreamingOutput = true;
+            outputChain = outputChain.then(() => onOutput(parsed));
+          } catch (err) {
+            logger.warn({ group: group.name, error: err }, 'Failed to parse streamed output');
+          }
+        }
+      }
+    });
+
+    proc.stderr.on('data', (data) => {
+      const chunk = data.toString();
+      stderr += chunk;
+      for (const line of chunk.trim().split('\n')) {
+        if (line) logger.debug({ process: group.folder }, line);
+      }
+    });
+
+    proc.on('close', (code) => {
+      const duration = Date.now() - startTime;
+
+      // Write log file
+      const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+      const logFile = path.join(logsDir, `process-${timestamp}.log`);
+      fs.writeFileSync(logFile, [
+        `=== Process Run Log ===`,
+        `Timestamp: ${new Date().toISOString()}`,
+        `Group: ${group.name}`,
+        `Duration: ${duration}ms`,
+        `Exit Code: ${code}`,
+      ].join('\n'));
+
+      if (code !== 0 && !hadStreamingOutput) {
+        logger.error({ group: group.name, code, duration }, 'Process agent error');
+        resolve({ status: 'error', result: null, error: `Process exited with code ${code}` });
+        return;
+      }
+
+      if (onOutput) {
+        outputChain.then(() => {
+          logger.info({ group: group.name, duration, newSessionId }, 'Process agent completed (streaming)');
+          resolve({ status: 'success', result: null, newSessionId });
+        });
+        return;
+      }
+
+      // Legacy non-streaming: parse last marker pair
+      try {
+        const startIdx = stdout.indexOf(OUTPUT_START_MARKER);
+        const endIdx = stdout.indexOf(OUTPUT_END_MARKER);
+        let jsonLine: string;
+        if (startIdx !== -1 && endIdx !== -1 && endIdx > startIdx) {
+          jsonLine = stdout.slice(startIdx + OUTPUT_START_MARKER.length, endIdx).trim();
+        } else {
+          const lines = stdout.trim().split('\n');
+          jsonLine = lines[lines.length - 1];
+        }
+        const output: ContainerOutput = JSON.parse(jsonLine);
+        resolve(output);
+      } catch (err) {
+        resolve({ status: 'error', result: null, error: `Failed to parse output: ${err}` });
+      }
+    });
+
+    proc.on('error', (err) => {
+      logger.error({ group: group.name, error: err }, 'Process spawn error');
+      resolve({ status: 'error', result: null, error: `Process spawn error: ${err.message}` });
     });
   });
 }
