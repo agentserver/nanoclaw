@@ -86,6 +86,9 @@ class WeixinChannel implements Channel {
         if (req.method === 'POST' && req.url === '/message') {
           const body = await readBody(req);
           const msg: NewMessage = JSON.parse(body);
+          // Auto-register this chat as a solo group if not already registered.
+          // WeChat is a direct-messaging platform — no manual group setup flow.
+          this.opts.autoRegisterChat?.(msg.chat_jid, msg.sender_name || msg.chat_jid);
           this.opts.onMessage(msg.chat_jid, msg);
           res.writeHead(200);
           res.end('ok');
