@@ -1,11 +1,17 @@
 /**
  * Container runtime abstraction for NanoClaw.
  * All runtime-specific logic lives here so swapping runtimes means changing one file.
+ *
+ * When NANOCLAW_NO_CONTAINER=true (K8s Pod mode), Docker is not available.
+ * All Docker-dependent functions become no-ops since the Pod itself provides isolation.
  */
 import { execSync } from 'child_process';
 import os from 'os';
 
 import { logger } from './logger.js';
+
+/** True when running in K8s Pod mode without Docker. */
+const NO_CONTAINER = process.env.NANOCLAW_NO_CONTAINER === 'true';
 
 /** The container runtime binary name. */
 export const CONTAINER_RUNTIME_BIN = 'docker';
@@ -37,6 +43,10 @@ export function stopContainer(name: string): void {
 
 /** Ensure the container runtime is running, starting it if needed. */
 export function ensureContainerRuntimeRunning(): void {
+  if (NO_CONTAINER) {
+    logger.info('No-container mode (NANOCLAW_NO_CONTAINER=true): skipping Docker runtime check');
+    return;
+  }
   try {
     execSync(`${CONTAINER_RUNTIME_BIN} info`, {
       stdio: 'pipe',
@@ -77,6 +87,9 @@ export function ensureContainerRuntimeRunning(): void {
 
 /** Kill orphaned NanoClaw containers from previous runs. */
 export function cleanupOrphans(): void {
+  if (NO_CONTAINER) {
+    return;
+  }
   try {
     const output = execSync(
       `${CONTAINER_RUNTIME_BIN} ps --filter name=nanoclaw- --format '{{.Names}}'`,
