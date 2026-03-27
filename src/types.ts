@@ -51,6 +51,7 @@ export interface NewMessage {
   timestamp: string;
   is_from_me?: boolean;
   is_bot_message?: boolean;
+  provider?: string; // "weixin", "telegram" — IM provider for routing replies
 }
 
 export interface ScheduledTask {
