@@ -89,10 +89,20 @@ class WeixinChannel implements Channel {
 
         if (req.method === 'POST' && req.url === '/message') {
           const body = await readBody(req);
-          const msg: NewMessage = JSON.parse(body);
+          const msg: NewMessage & { media_data?: string; media_type?: string } = JSON.parse(body);
           // Track provider per chat for reply routing.
           if (msg.provider) {
             this.chatProviders.set(msg.chat_jid, msg.provider);
+          }
+          // Save media to local file so the agent can read it.
+          if (msg.media_data) {
+            const mediaDir = '/tmp/nanoclaw-media';
+            fs.mkdirSync(mediaDir, { recursive: true });
+            const ext = msg.media_type === 'image' ? '.png' : '.bin';
+            const mediaPath = path.join(mediaDir, `${Date.now()}${ext}`);
+            fs.writeFileSync(mediaPath, Buffer.from(msg.media_data, 'base64'));
+            // Append file path to message content so agent can view it.
+            msg.content = (msg.content || '') + `\n[Media saved to ${mediaPath}]`;
           }
           this.opts.onMessage(msg.chat_jid, msg);
           res.writeHead(200);
