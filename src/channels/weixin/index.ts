@@ -60,6 +60,8 @@ class WeixinChannel implements Channel {
   private server: http.Server;
   private opts: ChannelOpts;
   private bridgeURL: string;
+  // Track provider per chatJid so replies go to the correct IM.
+  private chatProviders = new Map<string, string>();
   private bridgeSecret: string;
   private connected = false;
 
@@ -88,6 +90,10 @@ class WeixinChannel implements Channel {
         if (req.method === 'POST' && req.url === '/message') {
           const body = await readBody(req);
           const msg: NewMessage = JSON.parse(body);
+          // Track provider per chat for reply routing.
+          if (msg.provider) {
+            this.chatProviders.set(msg.chat_jid, msg.provider);
+          }
           this.opts.onMessage(msg.chat_jid, msg);
           res.writeHead(200);
           res.end('ok');
@@ -101,12 +107,13 @@ class WeixinChannel implements Channel {
             timestamp: string;
             name?: string;
             is_group?: boolean;
+            provider?: string;
           };
           this.opts.onChatMetadata(
             data.chat_jid,
             data.timestamp,
             data.name,
-            'weixin',
+            data.provider || 'weixin',
             data.is_group,
           );
           res.writeHead(200);
@@ -138,6 +145,7 @@ class WeixinChannel implements Channel {
     const body = JSON.stringify({
       to_user_id: jid,
       text,
+      provider: this.chatProviders.get(jid) || 'weixin',
     });
     const result = await httpPost(this.bridgeURL, body, {
       Authorization: `Bearer ${this.bridgeSecret}`,
@@ -153,7 +161,7 @@ class WeixinChannel implements Channel {
     const imageData = fs.readFileSync(imagePath);
     const filename = path.basename(imagePath);
     const boundary = `----NanoClaw${Date.now()}`;
-    const meta = JSON.stringify({ to_user_id: jid, text: caption || '' });
+    const meta = JSON.stringify({ to_user_id: jid, text: caption || '', provider: this.chatProviders.get(jid) || 'weixin' });
 
     // Build multipart body
     const parts: Buffer[] = [];
@@ -194,8 +202,11 @@ class WeixinChannel implements Channel {
     return this.connected;
   }
 
-  ownsJid(jid: string): boolean {
-    return jid.endsWith('@im.wechat');
+  ownsJid(_jid: string): boolean {
+    // In agentserver bridge mode, all IM providers (WeChat, Telegram, etc.)
+    // route through this channel. Provider-specific routing is handled by
+    // agentserver based on the "provider" field in the reply payload.
+    return true;
   }
 
   async disconnect(): Promise<void> {
