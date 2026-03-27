@@ -11,7 +11,7 @@ import fs from 'fs';
 import path from 'path';
 import { CronExpressionParser } from 'cron-parser';
 
-const IPC_DIR = '/workspace/ipc';
+const IPC_DIR = process.env.WORKSPACE_IPC || '/workspace/ipc';
 const MESSAGES_DIR = path.join(IPC_DIR, 'messages');
 const TASKS_DIR = path.join(IPC_DIR, 'tasks');
 
@@ -59,6 +59,33 @@ server.tool(
     writeIpcFile(MESSAGES_DIR, data);
 
     return { content: [{ type: 'text' as const, text: 'Message sent.' }] };
+  },
+);
+
+server.tool(
+  'send_image',
+  'Send an image file to the user or group. The image must be saved to a local file path first (use Write or Bash to create the file). Supports PNG, JPG, GIF, and WebP.',
+  {
+    image_path: z.string().describe('Absolute path to the image file (e.g. /tmp/chart.png)'),
+    caption: z.string().optional().describe('Optional caption text to send with the image'),
+  },
+  async (args) => {
+    if (!fs.existsSync(args.image_path)) {
+      return { content: [{ type: 'text' as const, text: `Error: file not found at ${args.image_path}` }], isError: true };
+    }
+
+    const data: Record<string, string | undefined> = {
+      type: 'image',
+      chatJid,
+      imagePath: args.image_path,
+      caption: args.caption || undefined,
+      groupFolder,
+      timestamp: new Date().toISOString(),
+    };
+
+    writeIpcFile(MESSAGES_DIR, data);
+
+    return { content: [{ type: 'text' as const, text: 'Image sent.' }] };
   },
 );
 
