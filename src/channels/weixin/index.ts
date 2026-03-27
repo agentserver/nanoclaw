@@ -9,8 +9,10 @@
  *   NANOCLAW_BRIDGE_SECRET - shared secret for HTTP auth
  */
 
+import fs from 'fs';
 import http from 'http';
 import https from 'https';
+import path from 'path';
 
 // These imports work when the file is copied into src/channels/weixin/
 // and the barrel import in src/channels/index.ts includes it.
@@ -144,6 +146,47 @@ class WeixinChannel implements Channel {
       throw new Error(
         `weixin bridge send failed: status=${result.status} body=${result.body}`,
       );
+    }
+  }
+
+  async sendImage(jid: string, imagePath: string, caption?: string): Promise<void> {
+    const imageData = fs.readFileSync(imagePath);
+    const filename = path.basename(imagePath);
+    const boundary = `----NanoClaw${Date.now()}`;
+    const meta = JSON.stringify({ to_user_id: jid, text: caption || '' });
+
+    // Build multipart body
+    const parts: Buffer[] = [];
+    // Meta part (JSON)
+    parts.push(Buffer.from(`--${boundary}\r\nContent-Disposition: form-data; name="meta"\r\nContent-Type: application/json\r\n\r\n${meta}\r\n`));
+    // Media part (binary)
+    parts.push(Buffer.from(`--${boundary}\r\nContent-Disposition: form-data; name="media"; filename="${filename}"\r\nContent-Type: application/octet-stream\r\n\r\n`));
+    parts.push(imageData);
+    parts.push(Buffer.from(`\r\n--${boundary}--\r\n`));
+    const body = Buffer.concat(parts);
+
+    const result = await new Promise<{ status: number; body: string }>((resolve, reject) => {
+      const parsed = new URL(this.bridgeURL);
+      const mod = parsed.protocol === 'https:' ? https : http;
+      const req = mod.request(parsed, {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${this.bridgeSecret}`,
+          'Content-Type': `multipart/form-data; boundary=${boundary}`,
+          'Content-Length': String(body.length),
+        },
+      }, (res) => {
+        const chunks: Buffer[] = [];
+        res.on('data', (c: Buffer) => chunks.push(c));
+        res.on('end', () => resolve({ status: res.statusCode ?? 0, body: Buffer.concat(chunks).toString() }));
+      });
+      req.on('error', reject);
+      req.write(body);
+      req.end();
+    });
+
+    if (result.status !== 200) {
+      throw new Error(`weixin bridge send image failed: status=${result.status} body=${result.body}`);
     }
   }
 
