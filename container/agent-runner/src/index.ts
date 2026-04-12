@@ -469,6 +469,7 @@ async function runQuery(
         'Skill',
         'NotebookEdit',
         'mcp__nanoclaw__*',
+        ...(process.env.AGENTSERVER_URL ? ['mcp__agentserver__*'] : []),
       ],
       env: sdkEnv,
       permissionMode: 'bypassPermissions',
@@ -484,6 +485,18 @@ async function runQuery(
             NANOCLAW_IS_MAIN: containerInput.isMain ? '1' : '0',
           },
         },
+        ...(process.env.AGENTSERVER_URL ? {
+          agentserver: {
+            command: '/usr/local/bin/agentserver',
+            args: ['mcp-server'],
+            env: {
+              AGENTSERVER_URL: process.env.AGENTSERVER_URL,
+              AGENTSERVER_TOKEN: process.env.AGENTSERVER_TOKEN || '',
+              AGENTSERVER_WORKSPACE_ID: process.env.AGENTSERVER_WORKSPACE_ID || '',
+              AGENTSERVER_SANDBOX_ID: process.env.AGENTSERVER_SANDBOX_ID || '',
+            },
+          },
+        } : {}),
       },
       hooks: {
         PreCompact: [
